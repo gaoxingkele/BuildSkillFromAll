@@ -1,0 +1,17 @@
+# 克隆的仓库和输出
+git/
+output/
+test_docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 虚拟环境
+.venv/
+venv/
+.env
