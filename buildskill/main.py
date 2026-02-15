@@ -20,6 +20,12 @@ def cmd_repo(args: argparse.Namespace, log) -> int:
     git_dir = args.git_dir or project_root / "git"
     output_dir = args.output or project_root / "output"
 
+    log("")
+    log("=" * 50)
+    log("  buildskill repo 开始")
+    log("=" * 50)
+    log("")
+
     if args.from_path:
         repo_path = args.from_path.resolve()
         if not repo_path.exists():
@@ -34,6 +40,7 @@ def cmd_repo(args: argparse.Namespace, log) -> int:
             git_dir,
             force=args.force,
             depth=None if args.full_clone else 1,
+            log=log,
         )
         log(f"  已克隆到: {repo_path}")
 
@@ -64,6 +71,34 @@ def cmd_repo(args: argparse.Namespace, log) -> int:
     return 0
 
 
+def _format_error(e: Exception) -> str:
+    """将异常转为用户可读的错误提示"""
+    err = str(e)
+    if "API key" in err.lower() or "API Key" in err:
+        return (
+            f"【API Key 配置错误】{e}\n"
+            "  → 请在 .env 中设置 GEMINI_API_KEY，或通过 --api-key 传入"
+        )
+    if "403" in err or "PermissionDenied" in str(type(e).__name__) or "leaked" in err.lower():
+        return (
+            f"【API Key 无效】{e}\n"
+            "  → Key 可能已泄露或过期，请在 Google AI Studio 生成新 Key"
+        )
+    if "SSL" in str(e) or "SSLError" in str(type(e).__name__):
+        return (
+            f"【网络/SSL 错误】{e}\n"
+            "  → 多为瞬时问题，可使用 --resume 续跑；检查网络/代理"
+        )
+    if "上传" in err or "upload" in err.lower():
+        return (
+            f"【文件上传失败】{e}\n"
+            "  → 检查网络；大文件可稍后使用 --resume 重试"
+        )
+    if "未找到" in err or "FileNotFound" in str(type(e).__name__):
+        return f"【文件/目录错误】{e}"
+    return str(e)
+
+
 def cmd_analyze(args: argparse.Namespace, log) -> int:
     """文档分析模式：Level1/Level2 分析 → 汇总 → Skill"""
     doc_dir = args.doc_dir.resolve()
@@ -71,6 +106,13 @@ def cmd_analyze(args: argparse.Namespace, log) -> int:
         print(f"错误: 不是有效目录: {doc_dir}", file=sys.stderr)
         return 1
     try:
+        log("")
+        log("=" * 50)
+        log("  buildskill analyze 开始")
+        log(f"  文档目录: {doc_dir}")
+        log(f"  模型: {args.model}")
+        log("=" * 50)
+        log("")
         out_dir = analyze_doc_dir(
             doc_dir,
             model_name=args.model,
@@ -79,6 +121,8 @@ def cmd_analyze(args: argparse.Namespace, log) -> int:
             resume=getattr(args, "resume", False),
             log=log,
         )
+        log("")
+        log("=" * 50)
         print(f"\n完成! 输出目录: {out_dir}")
         print(f"  - level1/    Agent1 一级规范分析")
         print(f"  - level2/    Agent2 二级元语义分析")
@@ -87,10 +131,13 @@ def cmd_analyze(args: argparse.Namespace, log) -> int:
         print(f"  - SKILL.md   写作指导 Skill")
         return 0
     except FileNotFoundError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
         return 1
     except ValueError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
         return 1
 
 
@@ -148,14 +195,23 @@ def main() -> int:
             return cmd_analyze(args, log)
         return 0
     except FileExistsError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        print(f"\n错误: 【目录已存在】{e}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
+        return 1
+    except PermissionError as e:
+        print(f"\n错误: 【权限/认证】{e}", file=sys.stderr)
         return 1
     except ValueError as e:
-        print(f"错误: {e}", file=sys.stderr)
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"错误: {e}", file=sys.stderr)
-        if not args.quiet:
+        print(f"\n错误: {_format_error(e)}", file=sys.stderr)
+        if not getattr(args, "quiet", False):
             import traceback
             traceback.print_exc()
         return 1

@@ -402,8 +402,16 @@ def _get_genai_model(model_name: str, api_key: str | None):
     return genai.GenerativeModel(model_name), genai
 
 
-def _call_llm(prompt: str, model_name: str, api_key: str | None = None, *, max_retries: int = 3) -> str:
+def _call_llm(
+    prompt: str,
+    model_name: str,
+    api_key: str | None = None,
+    *,
+    max_retries: int = 3,
+    log=None,
+) -> str:
     """调用大模型 API（纯文本），含网络错误重试"""
+    log = log or (lambda x: None)
     model, _ = _get_genai_model(model_name, api_key)
     max_chars = 900_000
     if len(prompt) > max_chars:
@@ -416,7 +424,9 @@ def _call_llm(prompt: str, model_name: str, api_key: str | None = None, *, max_r
         except RETRY_EXCEPTIONS as e:
             last_err = e
             if attempt < max_retries - 1:
-                time.sleep((attempt + 1) * 10)
+                wait = (attempt + 1) * 10
+                log(f"      ⚠ 网络错误，{wait}s 后重试 ({attempt + 2}/{max_retries}): {type(e).__name__}")
+                time.sleep(wait)
         except Exception:
             raise
     raise RuntimeError(f"API 调用失败（已重试{max_retries}次）: {last_err}") from last_err
@@ -430,8 +440,10 @@ def _call_llm_with_file(
     api_key: str | None = None,
     *,
     max_retries: int = 3,
+    log=None,
 ) -> str:
     """调用大模型 API（多模态：PDF、图片），含网络错误重试"""
+    log = log or (lambda x: None)
     model, genai = _get_genai_model(model_name, api_key)
     last_err = None
     for attempt in range(max_retries):
@@ -443,10 +455,11 @@ def _call_llm_with_file(
             last_err = e
             if attempt < max_retries - 1:
                 wait = (attempt + 1) * 15
+                log(f"      ⚠ 上传/网络错误，{wait}s 后重试 ({attempt + 2}/{max_retries}): {type(e).__name__}")
                 time.sleep(wait)
         except Exception as e:
-            raise RuntimeError(f"上传/分析文件失败 {file_path}: {e}") from e
-    raise RuntimeError(f"上传文件失败（已重试{max_retries}次） {file_path}: {last_err}") from last_err
+            raise RuntimeError(f"上传/分析文件失败 {file_path.name}: {e}") from e
+    raise RuntimeError(f"上传文件失败（已重试{max_retries}次） {file_path.name}: {last_err}") from last_err
 
 
 def _agent1_analyze(
@@ -455,13 +468,14 @@ def _agent1_analyze(
     mime_type: str | None,
     model_name: str,
     api_key: str | None,
+    log=None,
 ) -> str:
     """Agent1：一级规范分析（支持文本或多模态文件）"""
     if file_path and mime_type:
         prompt = AGENT1_LEVEL1_PROMPT + "\n\n请分析下方文档/图片。"
-        return _call_llm_with_file(prompt, file_path, mime_type, model_name, api_key)
+        return _call_llm_with_file(prompt, file_path, mime_type, model_name, api_key, log=log)
     prompt = AGENT1_LEVEL1_PROMPT + "\n\n" + (content or "")[:120_000]
-    return _call_llm(prompt, model_name, api_key)
+    return _call_llm(prompt, model_name, api_key, log=log)
 
 
 def _agent2_analyze(
@@ -470,13 +484,14 @@ def _agent2_analyze(
     mime_type: str | None,
     model_name: str,
     api_key: str | None,
+    log=None,
 ) -> str:
     """Agent2：二级元语义分析（支持文本或多模态文件）"""
     if file_path and mime_type:
         prompt = AGENT2_LEVEL2_PROMPT + "\n\n请分析下方文档/图片。"
-        return _call_llm_with_file(prompt, file_path, mime_type, model_name, api_key)
+        return _call_llm_with_file(prompt, file_path, mime_type, model_name, api_key, log=log)
     prompt = AGENT2_LEVEL2_PROMPT + "\n\n" + (content or "")[:120_000]
-    return _call_llm(prompt, model_name, api_key)
+    return _call_llm(prompt, model_name, api_key, log=log)
 
 
 def _agent3_review(
@@ -487,6 +502,7 @@ def _agent3_review(
     level2: str,
     model_name: str,
     api_key: str | None,
+    log=None,
 ) -> str:
     """Agent3：写作质量评审（支持文本或多模态源文档）"""
     if file_path and mime_type:
@@ -495,13 +511,13 @@ def _agent3_review(
             level1_content=level1[:60_000],
             level2_content=level2[:60_000],
         )
-        return _call_llm_with_file(prompt, file_path, mime_type, model_name, api_key)
+        return _call_llm_with_file(prompt, file_path, mime_type, model_name, api_key, log=log)
     prompt = AGENT3_REVIEW_PROMPT.format(
         source_content=(source or "")[:80_000],
         level1_content=level1[:60_000],
         level2_content=level2[:60_000],
     )
-    return _call_llm(prompt, model_name, api_key)
+    return _call_llm(prompt, model_name, api_key, log=log)
 
 
 def analyze_single_doc(
@@ -510,8 +526,10 @@ def analyze_single_doc(
     api_key: str | None = None,
     *,
     delay: float = 1.0,
+    log=None,
 ) -> DocAnalysisResult:
     """对单文档进行三智能体分析（支持文本、Word、PDF、图片）"""
+    log = log or (lambda x: None)
     is_mm = _is_multimodal(doc_path)
     mime = _get_mime_type(doc_path) if is_mm else None
     file_path = doc_path if is_mm else None
@@ -519,6 +537,7 @@ def analyze_single_doc(
 
     if not is_mm:
         if not content.strip() or content.startswith("["):
+            log(f"      ⚠ 跳过：文档无法读取或为空")
             return DocAnalysisResult(
                 doc_path=doc_path,
                 level1=f"# 分析跳过\n文档无法读取或为空: {doc_path.name}",
@@ -530,16 +549,24 @@ def analyze_single_doc(
     else:
         full_content = None
 
-    # Agent1
-    level1 = _agent1_analyze(full_content, file_path, mime, model_name, api_key)
+    t0 = time.time()
+    log(f"      → Agent1 一级规范分析...")
+    level1 = _agent1_analyze(full_content, file_path, mime, model_name, api_key, log=log)
+    log(f"      ✓ Agent1 完成 ({time.time()-t0:.1f}s)")
     time.sleep(delay)
-    # Agent2
-    level2 = _agent2_analyze(full_content, file_path, mime, model_name, api_key)
+
+    t1 = time.time()
+    log(f"      → Agent2 二级元语义分析...")
+    level2 = _agent2_analyze(full_content, file_path, mime, model_name, api_key, log=log)
+    log(f"      ✓ Agent2 完成 ({time.time()-t1:.1f}s)")
     time.sleep(delay)
-    # Agent3
+
+    t2 = time.time()
+    log(f"      → Agent3 写作质量评审...")
     review = _agent3_review(
-        full_content, file_path, mime, level1, level2, model_name, api_key
+        full_content, file_path, mime, level1, level2, model_name, api_key, log=log
     )
+    log(f"      ✓ Agent3 完成 ({time.time()-t2:.1f}s)，本文档共 {time.time()-t0:.1f}s")
 
     scores, weighted = _parse_review_scores(review)
 
@@ -611,6 +638,7 @@ def run_aggregation(
     score_summary: str,
     model_name: str,
     api_key: str | None = None,
+    log=None,
 ) -> str:
     """汇总归纳（融入评分）"""
     l1_merged = "\n\n---\n\n".join(f"## 文档 {i+1}\n{t}" for i, t in enumerate(level1_texts))
@@ -626,13 +654,15 @@ def run_aggregation(
         level2_texts=l2_merged,
         score_summary=score_summary,
     )
-    return _call_llm(prompt, model_name, api_key)
+    return _call_llm(prompt, model_name, api_key, log=log)
 
 
-def run_skill_conversion(summary_text: str, model_name: str, api_key: str | None = None) -> str:
+def run_skill_conversion(
+    summary_text: str, model_name: str, api_key: str | None = None, log=None
+) -> str:
     """将汇总分析转换为 Skill 内容"""
     prompt = SKILL_CONVERSION_PROMPT.format(summary_text=summary_text[:80_000])
-    return _call_llm(prompt, model_name, api_key)
+    return _call_llm(prompt, model_name, api_key, log=log)
 
 
 def analyze_doc_dir(
@@ -689,8 +719,8 @@ def analyze_doc_dir(
                 weighted_score=w,
             )
         else:
-            log(f"  [{i}/{len(docs)}] {doc.name} (Agent1→Agent2→Agent3)")
-            res = analyze_single_doc(doc, model_name, api_key, delay=delay)
+            log(f"  [{i}/{len(docs)}] {doc.name}")
+            res = analyze_single_doc(doc, model_name, api_key, delay=delay, log=log)
             l1_path.write_text(res.level1, encoding="utf-8")
             l2_path.write_text(res.level2, encoding="utf-8")
             _write_score_file(score_path, res)
@@ -712,12 +742,14 @@ def analyze_doc_dir(
         log("警告: 无有效分析结果，跳过汇总")
         summary = "# 汇总跳过\n无有效 Level1/Level2 分析结果。"
     else:
-        summary = run_aggregation(level1_texts, level2_texts, score_summary, model_name, api_key)
+        summary = run_aggregation(
+            level1_texts, level2_texts, score_summary, model_name, api_key, log=log
+        )
 
     (out_dir / "summary.md").write_text(summary, encoding="utf-8")
 
     log("正在生成 Skill 文件...")
-    skill_content = run_skill_conversion(summary, model_name, api_key)
+    skill_content = run_skill_conversion(summary, model_name, api_key, log=log)
     (out_dir / "SKILL.md").write_text(skill_content, encoding="utf-8")
 
     log(f"完成，输出目录: {out_dir}")

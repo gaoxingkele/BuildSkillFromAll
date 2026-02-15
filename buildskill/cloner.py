@@ -57,6 +57,7 @@ def clone_repo(
     *,
     force: bool = False,
     depth: int | None = 1,
+    log=None,
 ) -> Path:
     """
     克隆 GitHub 仓库到目标目录
@@ -74,12 +75,16 @@ def clone_repo(
         ValueError: URL 格式无效
         Exception: 克隆失败
     """
+    log = log or (lambda x: None)
     parsed = parse_github_url(repo_url)
     if not parsed:
         raise ValueError(f"无效的 GitHub URL: {repo_url}")
 
     owner, repo_name = parsed
     repo_path = target_dir / repo_name
+
+    log(f"  仓库: {owner}/{repo_name}")
+    log(f"  目标: {repo_path}")
 
     if repo_path.exists():
         if force:
@@ -95,5 +100,19 @@ def clone_repo(
     if depth is not None:
         clone_kwargs["depth"] = depth
 
-    Repo.clone_from(**clone_kwargs)
+    try:
+        log("  正在克隆...")
+        Repo.clone_from(**clone_kwargs)
+        log("  克隆完成")
+    except Exception as e:
+        err = str(e)
+        if "Repository not found" in err or "404" in err:
+            raise FileNotFoundError(
+                f"仓库不存在或无权访问: {owner}/{repo_name}\n  {e}"
+            ) from e
+        if "Authentication failed" in err or "403" in err:
+            raise PermissionError(
+                f"认证失败，请检查网络或使用 HTTPS/SSH 凭据\n  {e}"
+            ) from e
+        raise
     return repo_path
